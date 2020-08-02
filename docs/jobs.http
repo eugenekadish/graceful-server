@@ -1,0 +1,50 @@
+@port = 8080
+@hostname = http://127.0.0.1
+@contentType = application/json
+
+@host = {{hostname}}:{{port}}
+
+###
+
+# @name jobRef
+POST {{host}}/jobs
+Content-Type: application/json
+
+{
+	"message": "Order Tacos!"
+}
+
+@jobID = {{jobRef.response.body.$.jobID}}
+
+###
+
+# @name jobState
+GET {{host}}/jobs/{{jobID}}
+
+# ###
+# # @name getOrganizations
+# POST {{API_GATEWAY}}/admin/identities/search
+# Authorization: Bearer {{token}}
+# Content-Type: application/json
+
+# {
+#     "filter": {
+#         "type": "Corporation"
+#     }
+# }
+
+# @orgid = {{getOrganizations.response.body.$.[0].identityId}}
+
+# ###
+# # @name searchOrganizations
+# POST {{API_GATEWAY}}/admin/organizations/search
+# Authorization: Bearer {{token}}
+# Content-Type: application/json
+
+# {
+#     "filter": {
+
+#     }
+# }
+
+#

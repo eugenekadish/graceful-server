@@ -2,18 +2,25 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"sync"
 	"syscall"
 	"time"
 
-	uuid "github.com/satori/go.uuid"
+	"github.com/google/uuid"
 )
 
+// r := regexp.MustCompile("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[8|9|aA|bB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$")
+// .MatchString(uuid)
+
+// Job is state heald to process work on behalf of a clieant request.
 type Job struct {
 	ID uuid.UUID
 
@@ -21,17 +28,31 @@ type Job struct {
 	Cancel context.CancelFunc
 }
 
-var jobsPool sync.Pool
-var jobResults = make(map[string]struct {
+// Result summarizing data for the current recorded state for a client request
+// execution.
+type Result struct {
 	Status string
 	Result string
 
 	Duration time.Time
-})
+}
+
+var jobsPool sync.Pool
+var jobResults = make(map[uuid.UUID]Result)
+
+// WorkTable is a global thread safe map for tracking ongoing work
+var WorkTable *sync.Map
+
+// ResultsTable is a global record for the outcome of inititated work
+var ResultsTable *sync.Map
 
 // ShutdownPeriod is the duration to wait before a blocking function should
-//  abandon its work.
+// abandon its work.
 const ShutdownPeriod = 5 * time.Minute
+
+// JobIDPattern is the regular expression for getting a job ID from the URL path
+// in the request.
+var JobIDPattern = regexp.MustCompile("[0-9]{4}")
 
 // InfoHandler hanldes requests to the /info path
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
@@ -39,68 +60,114 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("the current time is %v", curTime)))
 }
 
+// JobHandler responsible for changing an individual job specified by ID
+func JobHandler(w http.ResponseWriter, r *http.Request) {
+
+	switch r.Method {
+	case http.MethodGet:
+
+		fmt.Printf(" path: %s ", r.URL.Path)
+		fmt.Printf(" id: %s", JobIDPattern.FindString(r.URL.Path))
+
+	case http.MethodDelete:
+	default:
+	}
+}
+
 // JobsHandler hanldes requests to the /jobs path
 func JobsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Hello, World!"))
 
-	var j = jobsPool.Get().(*Job)
+	switch r.Method {
+	case http.MethodGet:
 
-	var fail = make(chan error, 1)
-	var success = make(chan interface{}, 1)
+	case http.MethodPost:
 
-	go func(ctx context.Context, succes chan interface{}, fail chan error) {
+		var ok bool
+		var err error
 
-		var e error
-		var s, c interface{}
-
-		select {
-		case s = <-success: // The task completed successfully
-			fmt.Printf("job succeeded with message: %s \n", s)
-			// return s, nil
-		case e = <-fail: // The task failed
-			fmt.Printf("job failed with error: %+v \n", e)
-			// return nil, f
-		case c = <-ctx.Done(): // The task timed out
-			fmt.Printf("job cancelled %+v with error: %+v \n", c, ctx.Err())
-			// return nil, ctx.Err()
+		var payload struct {
+			Message string `json:"message"`
 		}
-	}(j.Ctx, success, fail)
 
-	// TODO: defer close the channels
+		if err = json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			fmt.Printf("decoding failed with error: %+v \n", err)
+		}
 
-	// Asynchronously run the Task supplied to the Job. The Task can succeed, error or timeout. Also,
-	// the client can cancel the Task before the timeout has expired by manually triggering it to
-	// cancel.
-	go func(m string) {
-		var t = time.NewTimer( /* rand.Intn(10) */ 2 * time.Second)
+		var j *Job
+		if j, ok = jobsPool.Get().(*Job); !ok {
+			err = fmt.Errorf("pool element cast success: %t", ok)
+			fmt.Printf("type cast failed with error: %+v \n", err)
+		}
 
-		<-t.C
-		success <- m
+		// var jobID = uuid.New()
+		var jobID = rand.Intn(9999)
 
-		// TODO: Call j.Cancel
+		j.Ctx, j.Cancel = context.WithCancel(context.Background())
 
-		// if res, err := tsk(j, j.Params); err != nil {
-		// 	fail <- err
-		// } else {
-		// 	success <- res
-		// }
-		// t.
-	}("blargus")
+		var r = new(Result)
 
-	// TODO: Retrieve the job from the map on delete
+		WorkTable.Store(jobID, j)
+		ResultsTable.Store(jobID, r)
+
+		var fail = make(chan error, 1)
+		var success = make(chan interface{}, 1)
+
+		var t = time.NewTimer( /* time.Duration(rand.Intn(10)) */ 2 * time.Second)
+
+		go func(t *time.Timer, m string) {
+			<-t.C
+			success <- m
+		}(t, payload.Message)
+
+		go func(r *Result, t *time.Timer, ctx context.Context, succes chan interface{}, fail chan error) {
+
+			var e error
+			var s, c interface{}
+
+			select {
+			case s = <-success: // The task completed successfully
+				fmt.Printf("job succeeded with message: %s \n", s)
+				// return s, nil
+			case e = <-fail: // The task failed
+				fmt.Printf("job failed with error: %+v \n", e)
+				// return nil, f
+			case c = <-ctx.Done(): // The task timed out
+				fmt.Printf("job cancelled %+v with error: %+v \n", c, ctx.Err())
+				// return nil, ctx.Err()
+			}
+
+			// TODO: Make sure to put the job back in the pool!!
+		}(r, t, j.Ctx, success, fail)
+
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte(fmt.Sprintf("{ jobID: %s }", jobID)))
+
+	case http.MethodDelete:
+		// var jobID = r.URL.
+
+		// TODO: Retrieve the job from the map on delete
+
+	default:
+	}
 }
 
 func main() {
+
 	var err error
 
 	var mux = http.NewServeMux()
 
 	mux.HandleFunc("/info", InfoHandler)
+
 	mux.HandleFunc("/jobs", JobsHandler)
+	mux.HandleFunc(fmt.Sprintf("/jobs/%s", jobPattern), JobHandler)
 
 	// if err = http.ListenAndServe(":8080", mux); err != nil {
 	// 	fmt.Printf("error starting server %+v \n", err)
 	// }
+
+	WorkTable = new(sync.Map)
+	ResultsTable = new(sync.Map)
 
 	var gracefulServer = http.Server{
 		Handler: mux,
@@ -137,18 +204,19 @@ func main() {
 	// 	fmt.Printf("error starting server %+v \n", err)
 	// }
 
-	var ctx context.Context
-	var cancel context.CancelFunc
+	// var ctx context.Context
+	// var cancel context.CancelFunc
 
-	ctx, _ = context.WithCancel(context.Background())
+	// ctx, cancel = context.WithCancel(context.Background())
 
 	jobsPool = sync.Pool{
 		New: func() interface{} {
-			return Job{
-				ID:     uuid.NewV4(),
-				Ctx:    ctx,
-				Cancel: cancel,
-			}
+			// return Job{
+			// 	ID:     uuid.New(),
+			// 	Ctx:    ctx,
+			// 	Cancel: cancel,
+			// }
+			return new(Job)
 		},
 	}
 
