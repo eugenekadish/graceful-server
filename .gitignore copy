@@ -1,0 +1,6 @@
+app
+base-component
+main
+vendor
+kubernetes-ci/.generated
+bin
