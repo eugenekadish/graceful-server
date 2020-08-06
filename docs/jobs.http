@@ -8,43 +8,28 @@
 
 # @name jobRef
 POST {{host}}/jobs
-Content-Type: application/json
+Content-Type: {{contentType}}
 
 {
 	"message": "Order Tacos!"
 }
 
-@jobID = {{jobRef.response.body.$.jobID}}
-
 ###
+
+@jobID = {{jobRef.response.body.$.jobID}}
 
 # @name jobState
 GET {{host}}/jobs/{{jobID}}
+Content-Type: {{contentType}}
 
 # ###
-# # @name getOrganizations
-# POST {{API_GATEWAY}}/admin/identities/search
-# Authorization: Bearer {{token}}
-# Content-Type: application/json
 
-# {
-#     "filter": {
-#         "type": "Corporation"
-#     }
-# }
-
-# @orgid = {{getOrganizations.response.body.$.[0].identityId}}
+# # @name jobsState
+# GET {{host}}/jobs
+# Content-Type: {{contentType}}
 
 # ###
-# # @name searchOrganizations
-# POST {{API_GATEWAY}}/admin/organizations/search
-# Authorization: Bearer {{token}}
-# Content-Type: application/json
 
-# {
-#     "filter": {
-
-#     }
-# }
-
-#
+# # @name removeJob
+# DELETE  {{host}}/jobs/{{jobID}}
+# Content-Type: {{contentType}}
