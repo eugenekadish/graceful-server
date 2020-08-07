@@ -22,6 +22,8 @@ import (
 type Job struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	message string
 }
 
 // Result records some state about the processing started by a client request
@@ -33,46 +35,33 @@ type Result struct {
 	FinishTime time.Time `json:"finishedTime"`
 }
 
-// ResultsAggregator combines and formats the total state for processing on
-// behalf of all client requests
-func ResultsAggregator(agg []*Result) func(key, val interface{}) bool {
-	return func(key interface{}, val interface{}) bool {
-
-		var ok bool
-		var err error
-
-		var r *Result
-		if r, ok = val.(*Result); !ok {
-			err = fmt.Errorf("failed to read job record with id %v", key)
-
-			r.Status = "FAULTY"
-			r.Result = err.Error()
-		}
-
-		agg = append(agg, r)
-
-		return true
-	}
-}
-
 // JobsPool manages resources for processing client requests
-var JobsPool sync.Pool
+var JobsPool *sync.Pool
 
 // WorkTable is a global thread safe map for storing controls for clients to
 // manage the data processing
-var WorkTable *sync.Map
+var WorkTable map[string]*Job
 
 // ResultsTable is a global record of all the state of processing started by a client requests
-var ResultsTable *sync.Map
+var ResultsTable map[string]*Result
 
 // JobIDPattern is the regular expression for getting a job ID from the path
 // "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[8|9|aA|bB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$"
 var JobIDPattern = regexp.MustCompile("[0-9]{4}")
 
-// InfoHandler hanldes requests to the /info path
+// InfoHandler returns summarizing data of the current state of the system
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
-	curTime := time.Now().Format(time.Kitchen)
-	w.Write([]byte(fmt.Sprintf("the current time is %v", curTime)))
+
+	switch r.Method {
+	case http.MethodGet:
+		var numberRunning = len(WorkTable)
+
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(fmt.Sprintf("{ \"total\": %d }", numberRunning)))
+
+	default:
+		// TODO: Handle unsupported HTTP verbs
+	}
 }
 
 // JobHandler responsible for changing an individual Job specified by an ID
@@ -84,40 +73,21 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		var err error
 
-		fmt.Printf("URL for job: %s \n", r.URL.Path)
-		fmt.Printf("Job ID: %s \n", JobIDPattern.FindString(r.URL.Path))
-
-		var jobID uint64
-		if jobID, err = strconv.ParseUint(JobIDPattern.FindString(r.URL.Path), 10, 32); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
-
-			return
-		}
-
-		var val interface{}
-		if val, ok = ResultsTable.Load(jobID); !ok {
-			err = fmt.Errorf("job with id %d not found", jobID)
-
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
-
-			return
-		}
+		var jobID = JobIDPattern.FindString(r.URL.Path)
 
 		var r *Result
-		if r, ok = val.(*Result); !ok {
-			err = fmt.Errorf("failed to read job record with id %d", jobID)
+		if r, ok = ResultsTable[jobID]; !ok {
+			err = fmt.Errorf("job with id %s not found", jobID)
 
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
 
 		if json.NewEncoder(w).Encode(r); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
@@ -129,40 +99,24 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		var err error
 
-		var jobID uint64
-		if jobID, err = strconv.ParseUint(JobIDPattern.FindString(r.URL.Path), 10, 32); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
-
-			return
-		}
-
-		var val interface{}
-		if val, ok = WorkTable.Load(jobID); !ok {
-			err = fmt.Errorf("job with id %d not found", jobID)
-
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
-
-			return
-		}
+		var jobID = JobIDPattern.FindString(r.URL.Path)
 
 		var j *Job
-		if j, ok = val.(*Job); !ok {
-			err = fmt.Errorf("failed to read job record with id %d", jobID)
+		if j, ok = WorkTable[jobID]; !ok {
+			err = fmt.Errorf("job with id %s not found", jobID)
 
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
 
 		j.cancel()
-		WorkTable.Delete(jobID)
+		delete(WorkTable, jobID)
 
-		if json.NewEncoder(w).Encode(fmt.Sprintf("{ \"message\": job with ID %d cancelled at %v }", jobID, time.Now())); err != nil {
+		if json.NewEncoder(w).Encode(fmt.Sprintf("{ \"message\": \"job with ID %s cancelled at %v\" }", jobID, time.Now())); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
@@ -184,29 +138,16 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 
 		var err error
 
+		var r *Result
 		var response []*Result
-		ResultsTable.Range(ResultsAggregator(response))
-		// ResultsTable.Range(func(key interface{}, val interface{}) bool {
 
-		// 	var ok bool
-		// 	var err error
-
-		// 	var r *Result
-		// 	if r, ok = val.(*Result); !ok {
-		// 		err = fmt.Errorf("failed to read job record with id %v", key)
-
-		// 		r.Status = "FAULTY"
-		// 		r.Result = err.Error()
-		// 	}
-
-		// 	response = append(response, r)
-
-		// 	return true
-		// })
+		for _, r = range ResultsTable {
+			response = append(response, r)
+		}
 
 		if json.NewEncoder(w).Encode(response); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
@@ -223,55 +164,79 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err = json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			fmt.Printf("decoding failed with error: %+v \n", err)
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+
+			return
 		}
 
 		var j *Job
 		if j, ok = JobsPool.Get().(*Job); !ok {
 			err = fmt.Errorf("pool element cast success: %t", ok)
-			fmt.Printf("type cast failed with error: %+v \n", err)
+
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+
+			return
 		}
 
+		j.message = payload.Message
+
 		// var jobID = uuid.New()
-		var jobID = rand.Int63n(9999)
+		var jobID = rand.Intn(9999)
 
 		var r = new(Result)
 
 		r.Status = "PENDING"
 		r.StartTime = time.Now()
 
-		WorkTable.Store(jobID, j)
-		ResultsTable.Store(jobID, r)
+		WorkTable[strconv.Itoa(jobID)] = j
+		ResultsTable[strconv.Itoa(jobID)] = r
 
 		var fail = make(chan error, 1)
 		var success = make(chan interface{}, 1)
 
-		// var t = time.NewTimer(time.Duration(rand.Int63n(8)) * time.Second)
+		var t = time.NewTimer(time.Duration(rand.Int63n(8)) * time.Second)
 
-		// go func(t *time.Timer, m string) {
-		// 	<-t.C
-		// 	success <- m
-		// }(t, payload.Message)
+		// https://play.golang.org/p/SfYFNZGzShR
 
-		go func(r *Result, j *Job, succes chan interface{}, fail chan error) {
+		go func(jP *sync.Pool, r *Result, j *Job, t *time.Timer, succes chan interface{}, fail chan error) {
 
 			var e error
-			var s, c interface{}
+
+			var s time.Time
+			var c interface{}
 
 			select {
-			case s = <-success: // The task completed successfully
-				fmt.Printf("job succeeded with message: %s \n", s)
+			case s = <-t.C:
+
+				fmt.Printf("job recieved at time: %v \n", s)
+
+				r.Status = "SUCCESS"
+				r.Result = j.message
+
+				r.FinishTime = time.Now()
+
+				fmt.Printf("job succeeded with message: %s \n", r.Result)
+
 				// return s, nil
 			case e = <-fail: // The task failed
-				fmt.Printf("job failed with error: %+v \n", e)
+				r.Status = "FAILED"
+				r.Result = fmt.Sprintf("job failed with error: %s", e.Error()) // Check NIL!!
+
+				fmt.Printf("job failed with error: %s \n", e.Error())
 				// return nil, f
 			case c = <-j.ctx.Done(): // The task timed out
-				fmt.Printf("job cancelled %+v with error: %+v \n", c, j.ctx.Err())
+				r.Status = "FAILED"
+				r.Result = fmt.Sprintf("job was cancelled or timed out with error: %s", j.ctx.Err())
+
+				fmt.Printf("job was cancelled or timed out for %v with error: %s \n", c, j.ctx.Err())
 				// return nil, ctx.Err()
 			}
 
-			// TODO: Make sure to put the job back in the pool!!
-		}(r, j, success, fail)
+			fmt.Println("Refilling the pool!")
+			JobsPool.Put(j)
+		}(JobsPool, r, j, t, success, fail)
 
 		w.Header().Set("Content-Type", "application/json")
 
@@ -348,22 +313,21 @@ func main() {
 
 	mux.HandleFunc("/info", InfoHandler)
 
-	// Adapter pattern: https://medium.com/@matryer/writing-middleware-in-golang-and-how-go-makes-it-so-much-fun-4375c1246e81
 	mux.HandleFunc("/jobs", JobsHandler)
 	mux.HandleFunc("/jobs/", JobHandler)
 
-	WorkTable = new(sync.Map)
-	ResultsTable = new(sync.Map)
+	// WorkTable = new(sync.Map)
+	WorkTable = make(map[string]*Job)
 
-	JobsPool = sync.Pool{
+	// ResultsTable = new(sync.Map)
+	ResultsTable = make(map[string]*Result)
+
+	JobsPool = &sync.Pool{
 		New: func() interface{} {
-
-			// https://play.golang.org/p/SfYFNZGzShR
-
 			var j = new(Job)
 
 			// j.ctx, j.cancel = context.WithCancel(context.Background())
-			j.ctx, j.cancel = context.WithTimeout(context.Background() /*4*time.Second*/, 4*time.Minute)
+			j.ctx, j.cancel = context.WithTimeout(context.Background(), 4*time.Second)
 
 			return j
 		},
@@ -374,7 +338,7 @@ func main() {
 	}
 
 	var listener net.Listener
-	if listener, err = net.Listen("tcp", ":8080"); err != nil {
+	if listener, err = net.Listen("tcp", ":80"); err != nil {
 		fmt.Printf("error creating listener: %s \n", err.Error())
 
 		return
@@ -383,7 +347,6 @@ func main() {
 	var done = make(chan bool, 1)
 	var sigs = make(chan os.Signal, 1)
 
-	// QUESTION: Should we add build tags for system calls: https://youtu.be/PAAkCSZUG1c?t=672 ?
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	go func(signal chan os.Signal, done chan bool) {
@@ -399,7 +362,7 @@ func main() {
 
 	fmt.Printf("Server is listening on port 80 \n")
 	if err = gracefulServer.Serve(listener); err != nil {
-		fmt.Printf("error starting server %+v \n", err)
+		fmt.Printf("error starting server %v \n", err)
 	}
 
 	<-done

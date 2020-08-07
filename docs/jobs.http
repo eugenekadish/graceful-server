@@ -1,4 +1,4 @@
-@port = 8080
+@port = 80
 @hostname = http://127.0.0.1
 @contentType = application/json
 
@@ -22,14 +22,14 @@ Content-Type: {{contentType}}
 GET {{host}}/jobs/{{jobID}}
 Content-Type: {{contentType}}
 
-# ###
+###
 
-# # @name jobsState
-# GET {{host}}/jobs
-# Content-Type: {{contentType}}
+# @name jobsState
+GET {{host}}/jobs
+Content-Type: {{contentType}}
 
-# ###
+###
 
-# # @name removeJob
-# DELETE  {{host}}/jobs/{{jobID}}
-# Content-Type: {{contentType}}
+# @name removeJob
+DELETE  {{host}}/jobs/{{jobID}}
+Content-Type: {{contentType}}

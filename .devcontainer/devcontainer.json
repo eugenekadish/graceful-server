@@ -13,11 +13,15 @@
 	
 	// Add the IDs of extensions you want installed when the container is created.
 	"extensions": [
-		"golang.Go"
+		"golang.Go",
+		"ms-vscode-remote.remote-containers",
+		"humao.rest-client"
 	],
 
+	"appPort": [ "8080:80" ]
+
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	"forwardPorts": [3000]
+	// "forwardPorts": [3000]
 
 	// Use 'postCreateCommand' to run commands after the container is created.
 	// "postCreateCommand": "go version",
