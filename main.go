@@ -51,13 +51,14 @@ var JobIDPattern = regexp.MustCompile("[0-9]{4}")
 
 // InfoHandler returns summarizing data of the current state of the system
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
 		var numberRunning = len(WorkTable)
 
-		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(fmt.Sprintf("{ \"total\": %d }", numberRunning)))
+		w.WriteHeader(http.StatusInternalServerError)
 
 	default:
 		// TODO: Handle unsupported HTTP verbs
@@ -66,6 +67,7 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
 // JobHandler responsible for changing an individual Job specified by an ID
 func JobHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -79,15 +81,15 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 		if r, ok = ResultsTable[jobID]; !ok {
 			err = fmt.Errorf("job with id %s not found", jobID)
 
-			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusNotFound)
 
 			return
 		}
 
 		if json.NewEncoder(w).Encode(r); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusInternalServerError)
 
 			return
 		}
@@ -105,8 +107,8 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 		if j, ok = WorkTable[jobID]; !ok {
 			err = fmt.Errorf("job with id %s not found", jobID)
 
-			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusNotFound)
 
 			return
 		}
@@ -115,8 +117,8 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 		delete(WorkTable, jobID)
 
 		if json.NewEncoder(w).Encode(fmt.Sprintf("{ \"message\": \"job with ID %s cancelled at %v\" }", jobID, time.Now())); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusInternalServerError)
 
 			return
 		}
@@ -132,6 +134,7 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 // JobsHandler adds new Jobs and retrieves the aggregate state of all the
 // processing
 func JobsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -146,8 +149,8 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if json.NewEncoder(w).Encode(response); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusInternalServerError)
 
 			return
 		}
@@ -164,8 +167,8 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err = json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusNotFound)
 
 			return
 		}
@@ -174,8 +177,8 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 		if j, ok = JobsPool.Get().(*Job); !ok {
 			err = fmt.Errorf("pool element cast success: %t", ok)
 
-			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusInternalServerError)
 
 			return
 		}
@@ -202,7 +205,7 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 
 		go func(jP *sync.Pool, r *Result, j *Job, t *time.Timer, succes chan interface{}, fail chan error) {
 
-			var e error
+			// var e error
 
 			var s time.Time
 			var c interface{}
@@ -214,34 +217,30 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 
 				r.Status = "SUCCESS"
 				r.Result = j.message
-
 				r.FinishTime = time.Now()
 
 				fmt.Printf("job succeeded with message: %s \n", r.Result)
 
-				// return s, nil
-			case e = <-fail: // The task failed
-				r.Status = "FAILED"
-				r.Result = fmt.Sprintf("job failed with error: %s", e.Error()) // Check NIL!!
+			// case e = <-fail:
 
-				fmt.Printf("job failed with error: %s \n", e.Error())
-				// return nil, f
-			case c = <-j.ctx.Done(): // The task timed out
+			// 	r.Status = "FAILED"
+			// 	r.Result = fmt.Sprintf("job failed with error: %s", e.Error()) // Check NIL!!
+
+			// 	fmt.Printf("job failed with error: %s \n", e.Error())
+
+			case c = <-j.ctx.Done():
+
 				r.Status = "FAILED"
 				r.Result = fmt.Sprintf("job was cancelled or timed out with error: %s", j.ctx.Err())
 
 				fmt.Printf("job was cancelled or timed out for %v with error: %s \n", c, j.ctx.Err())
-				// return nil, ctx.Err()
 			}
 
-			fmt.Println("Refilling the pool!")
 			JobsPool.Put(j)
 		}(JobsPool, r, j, t, success, fail)
 
-		w.Header().Set("Content-Type", "application/json")
-
-		w.WriteHeader(http.StatusAccepted)
 		w.Write([]byte(fmt.Sprintf("{ \"jobID\": %d }", jobID)))
+		w.WriteHeader(http.StatusAccepted)
 
 	default:
 		// TODO: Handle unsupported HTTP verbs
@@ -262,9 +261,14 @@ func (e *ExecTimer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("finished %s %s at %s \n", r.Method, r.URL.Path, time.Now())
 }
 
+// NewExecTimer constructs a new ExecTimer middleware handler
+func NewExecTimer(handler http.Handler) *ExecTimer {
+	return &ExecTimer{handler}
+}
+
 // CheeseHeaderWrapper is used as a middleware to protect a specified handler to
 // have the value "CHEESE" on the "Token" header key
-func CheeseHeaderWrapper(h http.Handler) http.Handler {
+func CheeseHeaderWrapper(h http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		var err error
@@ -273,8 +277,8 @@ func CheeseHeaderWrapper(h http.Handler) http.Handler {
 		if token = r.Header.Get("Token"); token != "CHEESE" {
 			err = fmt.Errorf("expecting CHEESE as the Token header but got %s", token)
 
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
 
 			return
 		}
@@ -285,7 +289,7 @@ func CheeseHeaderWrapper(h http.Handler) http.Handler {
 
 // URLPathCheckWrapper checks the URL for the handler is formatted correctly an
 // has a regular expression matching ID
-func URLPathCheckWrapper(h http.Handler) http.Handler {
+func URLPathCheckWrapper(h http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		var err error
@@ -294,8 +298,8 @@ func URLPathCheckWrapper(h http.Handler) http.Handler {
 		if match = JobIDPattern.MatchString(r.URL.Path); !match {
 			err = fmt.Errorf("URL path %s does not have the right pattern", r.URL.Path)
 
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(fmt.Sprintf("{ \"error\": %s }", err.Error())))
 
 			return
 		}
@@ -308,18 +312,7 @@ func main() {
 
 	var err error
 
-	// https://stackoverflow.com/questions/30474313/how-to-use-regexp-get-url-pattern-in-golang
-	var mux = http.NewServeMux()
-
-	mux.HandleFunc("/info", InfoHandler)
-
-	mux.HandleFunc("/jobs", JobsHandler)
-	mux.HandleFunc("/jobs/", JobHandler)
-
-	// WorkTable = new(sync.Map)
 	WorkTable = make(map[string]*Job)
-
-	// ResultsTable = new(sync.Map)
 	ResultsTable = make(map[string]*Result)
 
 	JobsPool = &sync.Pool{
@@ -333,8 +326,17 @@ func main() {
 		},
 	}
 
+	var mux = http.NewServeMux()
+
+	mux.HandleFunc("/info", InfoHandler)
+
+	mux.HandleFunc("/jobs", CheeseHeaderWrapper(JobsHandler))
+	mux.HandleFunc("/jobs/", URLPathCheckWrapper(JobHandler))
+
+	// mux = NewExecTimer(mux)
+
 	var gracefulServer = http.Server{
-		Handler: mux,
+		Handler: NewExecTimer(mux),
 	}
 
 	var listener net.Listener
@@ -349,16 +351,18 @@ func main() {
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	go func(signal chan os.Signal, done chan bool) {
+	go func(signal chan os.Signal, done chan bool, err error) {
 
 		<-sigs
 		var ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
 
 		defer cancel()
-		gracefulServer.Shutdown(ctx)
+		if err = gracefulServer.Shutdown(ctx); err != nil {
+			fmt.Printf("server shutdown failed with error: %s \n", err.Error())
+		}
 
 		done <- true
-	}(sigs, done)
+	}(sigs, done, err)
 
 	fmt.Printf("Server is listening on port 80 \n")
 	if err = gracefulServer.Serve(listener); err != nil {

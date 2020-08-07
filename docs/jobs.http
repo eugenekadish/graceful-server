@@ -9,6 +9,7 @@
 # @name jobRef
 POST {{host}}/jobs
 Content-Type: {{contentType}}
+Token: CHEESE
 
 {
 	"message": "Order Tacos!"
@@ -27,9 +28,16 @@ Content-Type: {{contentType}}
 # @name jobsState
 GET {{host}}/jobs
 Content-Type: {{contentType}}
+Token: CHEESE
 
 ###
 
 # @name removeJob
 DELETE  {{host}}/jobs/{{jobID}}
+Content-Type: {{contentType}}
+
+###
+
+# @name infoData
+GET {{host}}/info
 Content-Type: {{contentType}}
