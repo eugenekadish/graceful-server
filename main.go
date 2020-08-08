@@ -23,7 +23,7 @@ type Job struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	message string
+	Message string `json:"message"`
 }
 
 // Result records some state about the processing started by a client request
@@ -35,6 +35,64 @@ type Result struct {
 	FinishTime time.Time `json:"finishedTime"`
 }
 
+// GracefulServer is a robust server that can be easily be spun up and shut down
+// with well implemented error handeling.
+type GracefulServer struct {
+	s *http.Server
+	l net.Listener
+
+	context context.Context
+}
+
+// Start starts a robust server with well defined error handeling.
+func (gs *GracefulServer) Start() error {
+	return gs.s.Serve(gs.l)
+}
+
+// Stop starts a robust server with well defined error handeling.
+func (gs *GracefulServer) Stop() error {
+	var ctx, cancel = context.WithTimeout(gs.context, time.Minute)
+	defer cancel()
+
+	return gs.s.Shutdown(ctx)
+}
+
+// Option provides the client a callback that is used dynamically to specify
+//  attributes for a GracefulServer.
+type Option func(*GracefulServer)
+
+// NewGracefulServer is a variadic constructor for a GracefulServer.
+func NewGracefulServer(opts ...Option) *GracefulServer {
+	var gs = new(GracefulServer)
+
+	gs.s = new(http.Server)
+
+	var opt Option
+	for _, opt = range opts {
+		opt(gs)
+	}
+
+	return gs
+}
+
+// WithServerContext creates an Option that is used for specifying the
+// Endpoint for a GracefulServer.
+func WithServerContext(context context.Context) Option {
+	return func(gs *GracefulServer) { gs.context = context }
+}
+
+// WithServerHandler creates an Option that is used for specifying the
+// Endpoint for a GracefulServer.
+func WithServerHandler(h http.Handler) Option {
+	return func(gs *GracefulServer) { gs.s.Handler = h }
+}
+
+// WithServerListener creates an Option that is used for specifying the
+// Listener for a GracefulServer.
+func WithServerListener(listener net.Listener) Option {
+	return func(gs *GracefulServer) { gs.l = listener }
+}
+
 // JobsPool manages resources for processing client requests
 var JobsPool *sync.Pool
 
@@ -42,7 +100,8 @@ var JobsPool *sync.Pool
 // manage the data processing
 var WorkTable map[string]*Job
 
-// ResultsTable is a global record of all the state of processing started by a client requests
+// ResultsTable is a global record of all the state of processing started by a
+// client requests
 var ResultsTable map[string]*Result
 
 // JobIDPattern is the regular expression for getting a job ID from the path
@@ -51,7 +110,6 @@ var JobIDPattern = regexp.MustCompile("[0-9]{4}")
 
 // InfoHandler returns summarizing data of the current state of the system
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -67,7 +125,6 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
 // JobHandler responsible for changing an individual Job specified by an ID
 func JobHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -116,7 +173,9 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 		j.cancel()
 		delete(WorkTable, jobID)
 
-		if json.NewEncoder(w).Encode(fmt.Sprintf("{ \"message\": \"job with ID %s cancelled at %v\" }", jobID, time.Now())); err != nil {
+		j.Message = fmt.Sprintf("job with ID %s cancelled at %v", jobID, time.Now())
+
+		if json.NewEncoder(w).Encode(j); err != nil {
 			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusInternalServerError)
 
@@ -134,7 +193,6 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 // JobsHandler adds new Jobs and retrieves the aggregate state of all the
 // processing
 func JobsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -183,7 +241,7 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		j.message = payload.Message
+		j.Message = payload.Message
 
 		// var jobID = uuid.New()
 		var jobID = rand.Intn(9999)
@@ -216,7 +274,7 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 				fmt.Printf("job recieved at time: %v \n", s)
 
 				r.Status = "SUCCESS"
-				r.Result = j.message
+				r.Result = j.Message
 				r.FinishTime = time.Now()
 
 				fmt.Printf("job succeeded with message: %s \n", r.Result)
@@ -257,8 +315,12 @@ type ExecTimer struct {
 // making the needed prints
 func (e *ExecTimer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("started %s %s at %s \n", r.Method, r.URL.Path, time.Now())
+
+	defer func(method, path string) {
+		fmt.Printf("finished %s %s at %s \n", method, path, time.Now())
+	}(r.Method, r.URL.Path)
+
 	e.handler.ServeHTTP(w, r)
-	fmt.Printf("finished %s %s at %s \n", r.Method, r.URL.Path, time.Now())
 }
 
 // NewExecTimer constructs a new ExecTimer middleware handler
@@ -268,7 +330,7 @@ func NewExecTimer(handler http.Handler) *ExecTimer {
 
 // CheeseHeaderWrapper is used as a middleware to protect a specified handler to
 // have the value "CHEESE" on the "Token" header key
-func CheeseHeaderWrapper(h http.HandlerFunc) http.HandlerFunc {
+func CheeseHeaderWrapper(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		var err error
@@ -289,7 +351,7 @@ func CheeseHeaderWrapper(h http.HandlerFunc) http.HandlerFunc {
 
 // URLPathCheckWrapper checks the URL for the handler is formatted correctly an
 // has a regular expression matching ID
-func URLPathCheckWrapper(h http.HandlerFunc) http.HandlerFunc {
+func URLPathCheckWrapper(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		var err error
@@ -303,6 +365,16 @@ func URLPathCheckWrapper(h http.HandlerFunc) http.HandlerFunc {
 
 			return
 		}
+
+		h.ServeHTTP(w, r)
+	})
+}
+
+// ResponseHeaderWrapper checks the URL for the handler is formatted correctly an
+// has a regular expression matching ID
+func ResponseHeaderWrapper(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 
 		h.ServeHTTP(w, r)
 	})
@@ -328,16 +400,16 @@ func main() {
 
 	var mux = http.NewServeMux()
 
-	mux.HandleFunc("/info", InfoHandler)
+	mux.Handle("/info", ResponseHeaderWrapper(http.HandlerFunc(InfoHandler)))
 
-	mux.HandleFunc("/jobs", CheeseHeaderWrapper(JobsHandler))
-	mux.HandleFunc("/jobs/", URLPathCheckWrapper(JobHandler))
+	mux.Handle("/jobs", CheeseHeaderWrapper(ResponseHeaderWrapper(http.HandlerFunc(JobsHandler))))
+	mux.Handle("/jobs/", URLPathCheckWrapper(ResponseHeaderWrapper(http.HandlerFunc(JobHandler))))
 
 	// mux = NewExecTimer(mux)
 
-	var gracefulServer = http.Server{
-		Handler: NewExecTimer(mux),
-	}
+	// var gracefulServer = http.Server{
+	// 	Handler: NewExecTimer(mux),
+	// }
 
 	var listener net.Listener
 	if listener, err = net.Listen("tcp", ":80"); err != nil {
@@ -346,28 +418,42 @@ func main() {
 		return
 	}
 
+	var gracefulServer = NewGracefulServer(
+		WithServerContext(context.Background()),
+
+		WithServerHandler(mux),
+		WithServerListener(listener),
+	)
+
 	var done = make(chan bool, 1)
 	var sigs = make(chan os.Signal, 1)
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
 	go func(signal chan os.Signal, done chan bool, err error) {
 
 		<-sigs
-		var ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
-
-		defer cancel()
-		if err = gracefulServer.Shutdown(ctx); err != nil {
+		if err = gracefulServer.Stop(); err != nil {
 			fmt.Printf("server shutdown failed with error: %s \n", err.Error())
 		}
+
+		// var ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
+
+		// defer cancel()
+		// if err = gracefulServer.Shutdown(ctx); err != nil {
+		// 	fmt.Printf("server shutdown failed with error: %s \n", err.Error())
+		// }
 
 		done <- true
 	}(sigs, done, err)
 
 	fmt.Printf("Server is listening on port 80 \n")
-	if err = gracefulServer.Serve(listener); err != nil {
+	if err = gracefulServer.Start(); err != nil {
 		fmt.Printf("error starting server %v \n", err)
 	}
+
+	// if err = gracefulServer.Serve(listener); err != nil {
+	// 	fmt.Printf("error starting server %v \n", err)
+	// }
 
 	<-done
 	fmt.Printf("Server shutting down, good bye :) \n")
