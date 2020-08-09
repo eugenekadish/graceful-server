@@ -1,4 +1,4 @@
-Basic server that handles resource cleanup on shutdown. Follows the options patter for configuration and uses adapters to wrap handlers with middlewares. Only standard libraries are used.
+Basic server that handles resource cleanup on shutdown. Follows the options pattern for configuration and uses adapters to wrap handlers with middlewares. Only standard libraries are used.
 
 # Development
 

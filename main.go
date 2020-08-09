@@ -35,8 +35,7 @@ type Result struct {
 	FinishTime time.Time `json:"finishedTime"`
 }
 
-// GracefulServer is a robust server that can be easily be spun up and shut down
-// with well implemented error handeling.
+// GracefulServer is a robust server with well defined error handling
 type GracefulServer struct {
 	s *http.Server
 	l net.Listener
@@ -44,12 +43,12 @@ type GracefulServer struct {
 	context context.Context
 }
 
-// Start starts a robust server with well defined error handeling.
+// Start fires up the server
 func (gs *GracefulServer) Start() error {
 	return gs.s.Serve(gs.l)
 }
 
-// Stop starts a robust server with well defined error handeling.
+// Stop shuts down the server
 func (gs *GracefulServer) Stop() error {
 	var ctx, cancel = context.WithTimeout(gs.context, time.Minute)
 	defer cancel()
@@ -58,10 +57,10 @@ func (gs *GracefulServer) Stop() error {
 }
 
 // Option provides the client a callback that is used dynamically to specify
-//  attributes for a GracefulServer.
+// attributes for a GracefulServer
 type Option func(*GracefulServer)
 
-// NewGracefulServer is a variadic constructor for a GracefulServer.
+// NewGracefulServer is a variadic constructor for a GracefulServer
 func NewGracefulServer(opts ...Option) *GracefulServer {
 	var gs = new(GracefulServer)
 
@@ -76,19 +75,19 @@ func NewGracefulServer(opts ...Option) *GracefulServer {
 }
 
 // WithServerContext creates an Option that is used for specifying the
-// Endpoint for a GracefulServer.
+// a context for the GracefulServer on shutdown
 func WithServerContext(context context.Context) Option {
 	return func(gs *GracefulServer) { gs.context = context }
 }
 
 // WithServerHandler creates an Option that is used for specifying the
-// Endpoint for a GracefulServer.
+// handler for the GracefulServer
 func WithServerHandler(h http.Handler) Option {
 	return func(gs *GracefulServer) { gs.s.Handler = h }
 }
 
 // WithServerListener creates an Option that is used for specifying the
-// Listener for a GracefulServer.
+// Listener for a GracefulServer
 func WithServerListener(listener net.Listener) Option {
 	return func(gs *GracefulServer) { gs.l = listener }
 }
@@ -111,11 +110,47 @@ var JobIDPattern = regexp.MustCompile("[0-9]{4}")
 // InfoHandler returns summarizing data of the current state of the system
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
 	switch r.Method {
 	case http.MethodGet:
-		var numberRunning = len(WorkTable)
+		var pending, success, failed int
 
-		w.Write([]byte(fmt.Sprintf("{ \"total\": %d }", numberRunning)))
+		var res *Result
+		for _, res = range ResultsTable {
+			switch res.Status {
+			case "PENDING":
+				pending++
+			case "SUCCESS":
+				success++
+			case "FAILED":
+				failed++
+			}
+		}
+
+		var summary struct {
+			Info struct {
+				Pending int `json:"pending"`
+				Success int `json:"success"`
+				Failed  int `json:"failed"`
+			} `json:"info"`
+			Total int `json:"total"`
+		}
+
+		summary.Info.Pending = pending
+		summary.Info.Success = success
+
+		summary.Info.Failed = failed
+		summary.Total = pending + success + failed
+
+		if json.NewEncoder(w).Encode(&summary); err != nil {
+			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+			w.WriteHeader(http.StatusInternalServerError)
+
+			return
+		}
+
+		// w.Write([]byte(fmt.Sprintf("{ \"total\": %d }", numberRunning)))
 		w.WriteHeader(http.StatusInternalServerError)
 
 	default:
@@ -311,8 +346,8 @@ type ExecTimer struct {
 	handler http.Handler
 }
 
-// ServeHTTP handles the request by passing it to the wrapped handler while
-// making the needed prints
+// ServeHTTP handles the request by passing it to the wrapped handler and prints
+// to the console
 func (e *ExecTimer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("started %s %s at %s \n", r.Method, r.URL.Path, time.Now())
 
@@ -405,19 +440,12 @@ func main() {
 	mux.Handle("/jobs", CheeseHeaderWrapper(ResponseHeaderWrapper(http.HandlerFunc(JobsHandler))))
 	mux.Handle("/jobs/", URLPathCheckWrapper(ResponseHeaderWrapper(http.HandlerFunc(JobHandler))))
 
-	// mux = NewExecTimer(mux)
-
-	// var gracefulServer = http.Server{
-	// 	Handler: NewExecTimer(mux),
-	// }
-
 	var listener net.Listener
 	if listener, err = net.Listen("tcp", ":80"); err != nil {
 		fmt.Printf("error creating listener: %s \n", err.Error())
 
 		return
 	}
-
 	var gracefulServer = NewGracefulServer(
 		WithServerContext(context.Background()),
 
@@ -436,24 +464,13 @@ func main() {
 			fmt.Printf("server shutdown failed with error: %s \n", err.Error())
 		}
 
-		// var ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
-
-		// defer cancel()
-		// if err = gracefulServer.Shutdown(ctx); err != nil {
-		// 	fmt.Printf("server shutdown failed with error: %s \n", err.Error())
-		// }
-
 		done <- true
 	}(sigs, done, err)
 
 	fmt.Printf("Server is listening on port 80 \n")
 	if err = gracefulServer.Start(); err != nil {
-		fmt.Printf("error starting server %v \n", err)
+		fmt.Printf("error starting server %s \n", err.Error())
 	}
-
-	// if err = gracefulServer.Serve(listener); err != nil {
-	// 	fmt.Printf("error starting server %v \n", err)
-	// }
 
 	<-done
 	fmt.Printf("Server shutting down, good bye :) \n")
