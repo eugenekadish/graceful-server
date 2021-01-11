@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,10 +21,17 @@ import (
 
 // Job is used to control some processing started by a client request
 type Job struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	// ctx    context.Context
+	// cancel context.CancelFunc
 
 	Message string `json:"message"`
+}
+
+// Work is a job that is queued and can be cancelled
+type Work struct {
+	Job
+
+	cancel context.CancelFunc
 }
 
 // Result records some state about the processing started by a client request
@@ -97,7 +105,7 @@ var JobsPool *sync.Pool
 
 // WorkTable is a global thread safe map for storing controls for clients to
 // manage the data processing
-var WorkTable map[string]*Job
+var WorkTable map[string]*Work
 
 // ResultsTable is a global record of all the state of processing started by a
 // client requests
@@ -111,6 +119,9 @@ var JobIDPattern = regexp.MustCompile("[0-9]{4}")
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
 	var err error
+	var status int
+
+	var resBody bytes.Buffer
 
 	switch r.Method {
 	case http.MethodGet:
@@ -143,15 +154,17 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		summary.Info.Failed = failed
 		summary.Total = pending + success + failed
 
-		if json.NewEncoder(w).Encode(&summary); err != nil {
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
-			w.WriteHeader(http.StatusInternalServerError)
+		status = http.StatusOK
 
-			return
+		if err = json.NewEncoder(&resBody).Encode(&summary); err != nil {
+			status = http.StatusInternalServerError
+
+			resBody.Reset()
+			_, _ = resBody.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 		}
 
-		// w.Write([]byte(fmt.Sprintf("{ \"total\": %d }", numberRunning)))
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(status)
+		_, _ = w.Write(resBody.Bytes())
 
 	default:
 		// TODO: Handle unsupported HTTP verbs
@@ -161,11 +174,14 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 // JobHandler responsible for changing an individual Job specified by an ID
 func JobHandler(w http.ResponseWriter, r *http.Request) {
 
+	var ok bool
+	var err error
+
+	var status int
+	var resBody bytes.Buffer
+
 	switch r.Method {
 	case http.MethodGet:
-
-		var ok bool
-		var err error
 
 		var jobID = JobIDPattern.FindString(r.URL.Path)
 
@@ -173,51 +189,54 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 		if r, ok = ResultsTable[jobID]; !ok {
 			err = fmt.Errorf("job with id %s not found", jobID)
 
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
 
-		if json.NewEncoder(w).Encode(r); err != nil {
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
-			w.WriteHeader(http.StatusInternalServerError)
+		status = http.StatusOK
 
-			return
+		if err = json.NewEncoder(&resBody).Encode(r); err != nil {
+			status = http.StatusInternalServerError
+
+			resBody.Reset()
+			_, _ = resBody.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 		}
 
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(status)
+		_, _ = w.Write(resBody.Bytes())
 
 	case http.MethodDelete:
 
-		var ok bool
-		var err error
-
 		var jobID = JobIDPattern.FindString(r.URL.Path)
 
-		var j *Job
-		if j, ok = WorkTable[jobID]; !ok {
+		var work *Work
+		if work, ok = WorkTable[jobID]; !ok {
 			err = fmt.Errorf("job with id %s not found", jobID)
 
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
 
-		j.cancel()
+		work.cancel()
 		delete(WorkTable, jobID)
 
-		j.Message = fmt.Sprintf("job with ID %s cancelled at %v", jobID, time.Now())
+		work.Message = fmt.Sprintf("job with ID %s cancelled at %v", jobID, time.Now())
 
-		if json.NewEncoder(w).Encode(j); err != nil {
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
-			w.WriteHeader(http.StatusInternalServerError)
+		status = http.StatusOK
 
-			return
+		if err = json.NewEncoder(&resBody).Encode(work); err != nil {
+			status = http.StatusInternalServerError
+
+			resBody.Reset()
+			_, _ = resBody.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 		}
 
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(status)
+		_, _ = w.Write(resBody.Bytes())
 
 	default:
 		// TODO: Handle unsupported HTTP verbs
@@ -225,14 +244,18 @@ func JobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// JobsHandler adds new Jobs and retrieves the aggregate state of all the
+// JobsHandler adds new Jobs and retjob wasrieves the aggregate state of all the
 // processing
 func JobsHandler(w http.ResponseWriter, r *http.Request) {
 
+	var ok bool
+	var err error
+
+	var status int
+	var resBody bytes.Buffer
+
 	switch r.Method {
 	case http.MethodGet:
-
-		var err error
 
 		var r *Result
 		var response []*Result
@@ -241,27 +264,28 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 			response = append(response, r)
 		}
 
-		if json.NewEncoder(w).Encode(response); err != nil {
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
-			w.WriteHeader(http.StatusInternalServerError)
+		status = http.StatusOK
 
-			return
+		if json.NewEncoder(&resBody).Encode(response); err != nil {
+			status = http.StatusInternalServerError
+
+			resBody.Reset()
+			_, _ = resBody.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 		}
 
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(status)
+		_, _ = w.Write(resBody.Bytes())
 
 	case http.MethodPost:
-
-		var ok bool
-		var err error
 
 		var payload struct {
 			Message string `json:"message"`
 		}
 
 		if err = json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
+
 			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
@@ -270,8 +294,8 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 		if j, ok = JobsPool.Get().(*Job); !ok {
 			err = fmt.Errorf("pool element cast success: %t", ok)
 
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
@@ -281,22 +305,26 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 		// var jobID = uuid.New()
 		var jobID = rand.Intn(9999)
 
-		var r = new(Result)
+		var work = new(Work)
+		var result = new(Result)
 
-		r.Status = "PENDING"
-		r.StartTime = time.Now()
-
-		WorkTable[strconv.Itoa(jobID)] = j
-		ResultsTable[strconv.Itoa(jobID)] = r
+		result.Status = "PENDING"
+		result.StartTime = time.Now()
 
 		var fail = make(chan error, 1)
 		var success = make(chan interface{}, 1)
 
 		var t = time.NewTimer(time.Duration(rand.Int63n(8)) * time.Second)
 
+		var ctx context.Context
+		ctx, work.cancel = context.WithTimeout(context.Background(), 4*time.Second)
+
+		WorkTable[strconv.Itoa(jobID)] = work
+		ResultsTable[strconv.Itoa(jobID)] = result
+
 		// https://play.golang.org/p/SfYFNZGzShR
 
-		go func(jP *sync.Pool, r *Result, j *Job, t *time.Timer, succes chan interface{}, fail chan error) {
+		go func(jP *sync.Pool, r *Result, j *Job, ctx context.Context, t *time.Timer, succes chan interface{}, fail chan error) {
 
 			// var e error
 
@@ -321,19 +349,19 @@ func JobsHandler(w http.ResponseWriter, r *http.Request) {
 
 			// 	fmt.Printf("job failed with error: %s \n", e.Error())
 
-			case c = <-j.ctx.Done():
+			case c = <-ctx.Done(): // TODO: Remove context from job and create a new on every time
 
 				r.Status = "FAILED"
-				r.Result = fmt.Sprintf("job was cancelled or timed out with error: %s", j.ctx.Err())
+				r.Result = fmt.Sprintf("job was cancelled or timed out with error: %s", ctx.Err())
 
-				fmt.Printf("job was cancelled or timed out for %v with error: %s \n", c, j.ctx.Err())
+				fmt.Printf("job was cancelled or timed out for %v with error: %s \n", c, ctx.Err())
 			}
 
 			JobsPool.Put(j)
-		}(JobsPool, r, j, t, success, fail)
+		}(JobsPool, result, j, ctx, t, success, fail)
 
-		w.Write([]byte(fmt.Sprintf("{ \"jobID\": %d }", jobID)))
 		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(fmt.Sprintf("{ \"jobID\": %d }", jobID)))
 
 	default:
 		// TODO: Handle unsupported HTTP verbs
@@ -374,8 +402,8 @@ func CheeseHeaderWrapper(h http.Handler) http.Handler {
 		if token = r.Header.Get("Token"); token != "CHEESE" {
 			err = fmt.Errorf("expecting CHEESE as the Token header but got %s", token)
 
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
@@ -395,8 +423,8 @@ func URLPathCheckWrapper(h http.Handler) http.Handler {
 		if match = JobIDPattern.MatchString(r.URL.Path); !match {
 			err = fmt.Errorf("URL path %s does not have the right pattern", r.URL.Path)
 
-			w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(fmt.Sprintf("{ \"error\": \"%s\" }", err.Error())))
 
 			return
 		}
@@ -419,17 +447,12 @@ func main() {
 
 	var err error
 
-	WorkTable = make(map[string]*Job)
+	WorkTable = make(map[string]*Work)
 	ResultsTable = make(map[string]*Result)
 
 	JobsPool = &sync.Pool{
 		New: func() interface{} {
-			var j = new(Job)
-
-			// j.ctx, j.cancel = context.WithCancel(context.Background())
-			j.ctx, j.cancel = context.WithTimeout(context.Background(), 4*time.Second)
-
-			return j
+			return new(Job)
 		},
 	}
 

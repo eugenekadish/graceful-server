@@ -18,5 +18,4 @@ More resources on patterns and best practices:
 
   * https://www.youtube.com/watch?v=PAAkCSZUG1c
   * https://www.youtube.com/watch?v=24lFtGHWxAQ
-
   * https://medium.com/@matryer/the-http-handler-wrapper-technique-in-golang-updated-bc7fbcffa702
